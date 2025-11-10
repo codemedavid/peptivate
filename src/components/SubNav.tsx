@@ -44,7 +44,7 @@ const SubNav: React.FC<SubNavProps> = ({ selectedCategory, onCategoryClick }) =>
   }
 
   return (
-    <nav className="hidden md:block bg-white shadow-sm sticky top-[56px] sm:top-[64px] md:top-[72px] z-40 border-b border-gray-100">
+    <nav className="hidden md:block bg-white shadow-sm sticky top-[72px] md:top-[80px] lg:top-[88px] z-40 border-b border-gray-100">
       <div className="container mx-auto px-3 md:px-4">
         <div className="flex items-center space-x-2 md:space-x-3 overflow-x-auto py-2 md:py-3 lg:py-4 scrollbar-hide">
           {categories.map((category) => {
