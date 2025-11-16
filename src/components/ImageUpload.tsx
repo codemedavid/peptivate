@@ -1,5 +1,6 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Upload, X, Image as ImageIcon } from 'lucide-react';
+import { useImageUpload } from '../hooks/useImageUpload';
 
 interface ImageUploadProps {
   currentImage?: string | null;
@@ -15,8 +16,33 @@ const ImageUpload: React.FC<ImageUploadProps> = ({
   folder = 'menu-images'
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
+  const [localImageUrl, setLocalImageUrl] = useState<string | null>(null);
+  const { uploadImage, uploading, uploadProgress } = useImageUpload(folder);
+  
+  // Use local image URL if available, otherwise use prop
+  const displayImage = localImageUrl || currentImage || null;
+  
+  // Log when currentImage changes to debug and sync with local state
+  useEffect(() => {
+    console.log('🖼️ ImageUpload currentImage prop changed:', {
+      currentImage,
+      localImageUrl,
+      displayImage: localImageUrl || currentImage || null,
+      type: typeof currentImage,
+      hasValue: !!currentImage,
+      length: currentImage?.length || 0
+    });
+    
+    // Sync local state with prop when it changes from parent (but don't overwrite if we just set it locally)
+    if (currentImage && currentImage !== localImageUrl) {
+      console.log('🖼️ Syncing local image URL with prop from parent');
+      setLocalImageUrl(currentImage);
+    } else if (!currentImage && localImageUrl && !uploading) {
+      // If prop is cleared and we're not uploading, clear local too (but keep it during upload)
+      console.log('🖼️ Clearing local image URL because prop was cleared');
+      setLocalImageUrl(null);
+    }
+  }, [currentImage]); // Only depend on currentImage to avoid loops
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -35,26 +61,49 @@ const ImageUpload: React.FC<ImageUploadProps> = ({
       return;
     }
 
-    // Convert image to base64 - this works without any setup!
-    const reader = new FileReader();
-    reader.onloadstart = () => setUploading(true);
-    reader.onprogress = (e) => {
-      if (e.lengthComputable) {
-        setUploadProgress(Math.round((e.loaded / e.total) * 100));
+    try {
+      // Upload to Supabase Storage
+      console.log('🚀 Starting image upload...');
+      console.log('📁 File details:', { name: file.name, size: file.size, type: file.type });
+      
+      const imageUrl = await uploadImage(file);
+      console.log('✅ Upload complete, received image URL:', imageUrl);
+      console.log('✅ URL type:', typeof imageUrl, 'URL length:', imageUrl?.length);
+      
+      if (!imageUrl || imageUrl.trim() === '') {
+        throw new Error('Upload succeeded but no URL was returned');
       }
-    };
-    reader.onload = () => {
-      const base64String = reader.result as string;
-      onImageChange(base64String);
-      setUploading(false);
-      setUploadProgress(0);
-    };
-    reader.onerror = () => {
-      alert('❌ Failed to read image file');
-      setUploading(false);
-      setUploadProgress(0);
-    };
-    reader.readAsDataURL(file);
+      
+      // Ensure we pass a valid string URL
+      const validUrl = imageUrl.trim();
+      console.log('📤 Calling onImageChange with URL:', validUrl.substring(0, 80) + '...');
+      
+      // Immediately update local state to show preview
+      setLocalImageUrl(validUrl);
+      console.log('✅ Local image URL set for immediate preview');
+      
+      // Call the callback with the URL to update parent state
+      onImageChange(validUrl);
+      
+      // Verify callback was called
+      console.log('✅ onImageChange callback executed');
+    } catch (error) {
+      console.error('❌ Upload error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      
+      // Show user-friendly error message
+      let userMessage = `❌ Failed to upload image: ${errorMessage}`;
+      
+      if (errorMessage.includes('Bucket not found') || errorMessage.includes('not found')) {
+        userMessage += '\n\n💡 Solution: Run CREATE_STORAGE_BUCKET.sql in Supabase SQL Editor to create the storage bucket.';
+      } else if (errorMessage.includes('timeout')) {
+        userMessage += '\n\n💡 This might mean the storage bucket doesn\'t exist. Check your Supabase Storage settings.';
+      } else if (errorMessage.includes('row-level security') || errorMessage.includes('policy')) {
+        userMessage += '\n\n💡 Solution: Run CREATE_STORAGE_BUCKET.sql to set up storage policies.';
+      }
+      
+      alert(userMessage);
+    }
 
     // Reset file input
     if (fileInputRef.current) {
@@ -63,6 +112,7 @@ const ImageUpload: React.FC<ImageUploadProps> = ({
   };
 
   const handleRemoveImage = () => {
+    setLocalImageUrl(null);
     onImageChange(undefined);
   };
 
@@ -72,10 +122,10 @@ const ImageUpload: React.FC<ImageUploadProps> = ({
 
   return (
     <div className={`space-y-4 ${className}`}>
-      {currentImage ? (
+      {displayImage ? (
         <div className="relative group">
           <img
-            src={currentImage}
+            src={displayImage}
             alt="Preview"
             className="w-full max-w-2xl object-contain rounded-2xl border-2 border-sky-200 shadow-lg hover:shadow-xl transition-all"
             loading="lazy"
@@ -95,25 +145,10 @@ const ImageUpload: React.FC<ImageUploadProps> = ({
           onClick={triggerFileSelect}
           className="w-full max-w-2xl border-2 border-dashed border-sky-300 rounded-2xl p-12 flex flex-col items-center justify-center cursor-pointer hover:border-sky-400 hover:bg-sky-50/50 transition-all duration-300 bg-gradient-to-br from-sky-50/30 to-blue-50/30"
         >
-          {uploading ? (
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-4 border-sky-200 border-t-sky-500 mx-auto mb-4"></div>
-              <p className="text-base font-medium text-gray-700 mb-2">Uploading... {uploadProgress}%</p>
-              <div className="w-48 bg-sky-100 rounded-full h-3 mt-3">
-                <div 
-                  className="bg-gradient-to-r from-sky-400 to-sky-500 h-3 rounded-full transition-all duration-300 shadow-sm"
-                  style={{ width: `${uploadProgress}%` }}
-                ></div>
-              </div>
-            </div>
-          ) : (
-            <>
-              <ImageIcon className="h-16 w-16 text-sky-400 mb-4" />
-              <p className="text-lg font-medium text-gray-700 mb-2">Click to upload COA image</p>
-              <p className="text-sm text-gray-500 mb-1">or drag and drop</p>
-              <p className="text-xs text-gray-400">JPEG, PNG, WebP (max 5MB)</p>
-            </>
-          )}
+          <ImageIcon className="h-16 w-16 text-sky-400 mb-4" />
+          <p className="text-lg font-medium text-gray-700 mb-2">Click to upload product image</p>
+          <p className="text-sm text-gray-500 mb-1">or drag and drop</p>
+          <p className="text-xs text-gray-400">JPEG, PNG, WebP (max 5MB)</p>
         </div>
       )}
 
@@ -126,8 +161,8 @@ const ImageUpload: React.FC<ImageUploadProps> = ({
         disabled={uploading}
       />
 
-      {!currentImage && (
-        <div className="flex items-center space-x-3">
+      {!displayImage && (
+        <div className="flex items-center gap-3 flex-wrap">
           <button
             type="button"
             onClick={triggerFileSelect}
@@ -137,27 +172,6 @@ const ImageUpload: React.FC<ImageUploadProps> = ({
             <Upload className="h-5 w-5" />
             <span>Choose File</span>
           </button>
-          <span className="text-sm text-gray-500">or paste URL below</span>
-        </div>
-      )}
-
-      {/* Optional URL Input */}
-      {!currentImage && (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Or paste an image URL (optional)
-          </label>
-          <input
-            type="url"
-            value={currentImage || ''}
-            onChange={(e) => onImageChange(e.target.value || undefined)}
-            className="input-field"
-            placeholder="https://i.imgur.com/example.jpg"
-            disabled={uploading}
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            If you have the image already hosted online
-          </p>
         </div>
       )}
     </div>

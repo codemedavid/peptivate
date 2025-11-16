@@ -167,25 +167,152 @@ const AdminDashboard: React.FC = () => {
 
     try {
       setIsProcessing(true);
+      
+      // Prepare data for saving - convert undefined to null for nullable fields
+      const prepareData = (data: Partial<Product>) => {
+        const prepared = { ...data };
+        // Convert undefined to null for nullable fields
+        if (prepared.image_url === undefined) prepared.image_url = null;
+        if (prepared.safety_sheet_url === undefined) prepared.safety_sheet_url = null;
+        if (prepared.discount_price === undefined) prepared.discount_price = null;
+        if (prepared.molecular_weight === undefined) prepared.molecular_weight = null;
+        if (prepared.cas_number === undefined) prepared.cas_number = null;
+        if (prepared.sequence === undefined) prepared.sequence = null;
+        if (prepared.inclusions === undefined) prepared.inclusions = null;
+        return prepared;
+      };
+
+      // Only send columns that actually exist in the `products` table
+      const pickProductDbFields = (data: Partial<Product>) => {
+        const allowedKeys: (keyof Product)[] = [
+          'name',
+          'description',
+          'category',
+          'base_price',
+          'discount_price',
+          'discount_active',
+          'purity_percentage',
+          'molecular_weight',
+          'cas_number',
+          'sequence',
+          'storage_conditions',
+          'stock_quantity',
+          'available',
+          'featured',
+          'image_url',
+          'safety_sheet_url',
+        ];
+
+        const dbPayload: Partial<Product> = {};
+        for (const key of allowedKeys) {
+          if (key in data) {
+            // @ts-expect-error index by key
+            dbPayload[key] = data[key];
+          }
+        }
+        return dbPayload;
+      };
+
       if (editingProduct) {
         // Remove read-only fields and relations before updating
         const { id, created_at, updated_at, variations, ...updateData } = formData as Product;
-        const result = await updateProduct(editingProduct.id, updateData);
+        
+        // EXPLICITLY ensure image_url is included (even if it's null/undefined)
+        // Get image_url directly from formData to ensure we have the latest value
+        const imageUrlValue = formData.image_url !== undefined ? formData.image_url : null;
+        
+        // Create update payload - ensure image_url is always included
+        const updatePayload: any = {
+          ...updateData,
+        };
+        
+        // ALWAYS explicitly set image_url, even if it's null
+        updatePayload.image_url = imageUrlValue;
+        
+        const preparedData = prepareData(updatePayload);
+
+        // Triple-check: Force image_url to be in the payload
+        preparedData.image_url = imageUrlValue;
+
+        // Strip out any fields that don't exist on the products table
+        const dbPayload = pickProductDbFields(preparedData);
+        
+        // Log to verify it's included
+        console.log('🔍 Final payload check:', {
+          has_image_url: 'image_url' in dbPayload,
+          image_url_value: dbPayload.image_url,
+          image_url_type: typeof dbPayload.image_url,
+          all_keys: Object.keys(dbPayload)
+        });
+        
+        console.log('💾 Saving product update:', { 
+          id: editingProduct.id, 
+          image_url: dbPayload.image_url,
+          image_url_type: typeof dbPayload.image_url,
+          image_url_length: dbPayload.image_url?.length || 0,
+          fullPayload: dbPayload 
+        });
+        
+        const result = await updateProduct(editingProduct.id, dbPayload);
         if (!result.success) {
-          throw new Error(result.error);
+          console.error('❌ Update failed:', result.error);
+          throw new Error(result.error || 'Failed to update product');
         }
+        
+        // Verify the image was saved
+        if (result.data && result.data.image_url !== preparedData.image_url) {
+          console.warn('⚠️ Image URL mismatch after save:', {
+            sent: preparedData.image_url,
+            received: result.data.image_url
+          });
+        }
+        
+        console.log('✅ Product updated successfully', { 
+          saved_image_url: result.data?.image_url 
+        });
       } else {
         // Remove non-creatable fields for new products
         const { variations, ...createData } = formData as any;
-        const result = await addProduct(createData as Omit<Product, 'id' | 'created_at' | 'updated_at'>);
+        
+        // EXPLICITLY ensure image_url is included
+        const createPayload = {
+          ...createData,
+          image_url: formData.image_url !== undefined ? formData.image_url : null,
+        };
+        
+        const preparedData = prepareData(createPayload);
+
+        // Strip out any fields that don't exist on the products table for insert
+        const dbPayload = pickProductDbFields(preparedData);
+        console.log('💾 Creating new product:', { 
+          name: dbPayload.name, 
+          image_url: dbPayload.image_url,
+          fullPayload: dbPayload 
+        });
+        
+        const result = await addProduct(dbPayload as Omit<Product, 'id' | 'created_at' | 'updated_at'>);
         if (!result.success) {
           throw new Error(result.error);
         }
+        console.log('✅ Product created successfully');
       }
+      
+      // Refresh products to ensure UI is updated
+      console.log('🔄 Refreshing products after save...');
+      await refreshProducts();
+      console.log('✅ Products refreshed');
+      
+      // If we were editing, verify the image was saved
+      if (editingProduct && formData.image_url) {
+        console.log('🔍 Verifying saved image URL:', formData.image_url);
+        // The refresh should have updated the products list with the new image
+      }
+      
       setCurrentView('products');
       setEditingProduct(null);
       setManagingVariationsProductId(null);
     } catch (error) {
+      console.error('❌ Error saving product:', error);
       alert(`Failed to save product: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsProcessing(false);
@@ -563,17 +690,38 @@ const AdminDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Image */}
+            {/* Product Image */}
             <div>
               <h3 className="text-base md:text-lg font-bold text-gray-900 mb-3 md:mb-4 flex items-center gap-2">
                 <span className="text-xl md:text-2xl">🖼️</span>
                 Product Image
               </h3>
+              <p className="text-xs md:text-sm text-gray-500 mb-3">
+                Upload a product image (optional). This will appear on the customer-facing site.
+              </p>
               <ImageUpload
                 currentImage={formData.image_url || undefined}
-                onImageChange={(imageUrl) => setFormData({ ...formData, image_url: imageUrl })}
+                onImageChange={(imageUrl) => {
+                  // Normalize value: undefined/null → null, non-empty string → trimmed URL
+                  let newImageUrl: string | null = null;
+                  if (imageUrl) {
+                    const trimmed = imageUrl.trim();
+                    newImageUrl = trimmed === '' ? null : trimmed;
+                  }
+
+                  setFormData((prev) => ({
+                    ...prev,
+                    image_url: newImageUrl,
+                  }));
+
+                  console.log('🖼️ Product image updated in formData:', {
+                    original: imageUrl,
+                    saved: newImageUrl,
+                  });
+                }}
               />
             </div>
+
           </div>
         </div>
         </div>
